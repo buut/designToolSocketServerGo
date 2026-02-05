@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Design Tool Socket Test</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; display: flex; height: 100vh; background: #1a1a1a; color: white; overflow: hidden; }
+        #sidebar { width: 300px; background: #252525; border-right: 1px solid #333; display: flex; flex-direction: column; padding: 20px; }
+        #canvas { flex: 1; position: relative; cursor: crosshair; overflow: hidden; background: #121212; }
+        
+        .user-list { list-style: none; padding: 0; flex: 1; overflow-y: auto; }
+        .user-item { padding: 10px; margin-bottom: 5px; background: #333; border-radius: 4px; display: flex; align-items: center; gap: 10px; }
+        .user-dot { width: 10px; height: 10px; background: #4CAF50; border-radius: 50%; }
+        
+        .mouse-cursor { position: absolute; width: 12px; height: 12px; background: rgba(255, 255, 255, 0.8); border: 2px solid #007bff; border-radius: 50%; pointer-events: none; transition: transform 0.1s ease; z-index: 1000; }
+        .mouse-label { position: absolute; top: 15px; left: 15px; background: #007bff; color: white; padding: 2px 6px; font-size: 10px; border-radius: 3px; white-space: nowrap; }
+        
+        .btn { padding: 10px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; margin-bottom: 10px; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        
+        #log { font-size: 11px; height: 150px; overflow-y: scroll; background: #000; padding: 5px; color: #0f0; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <h2>Design Tool Room</h2>
+        <input type="text" id="userName" placeholder="Your Name" style="padding: 8px; margin-bottom: 10px; background: #333; color: white; border: 1px solid #444;">
+        <input type="text" id="roomId" placeholder="Template ID" value="670fa914c2f0842143d59c31" style="padding: 8px; margin-bottom: 10px; background: #333; color: white; border: 1px solid #444;">
+        <button class="btn btn-primary" onclick="connect()">Connect to Socket</button>
+        
+        <h3>Connected Users</h3>
+        <ul id="userList" class="user-list"></ul>
+        
+        <button class="btn btn-success" onclick="sendProjectData()">Send Project Data (JSON)</button>
+        
+        <div id="log"></div>
+    </div>
+    
+    <div id="canvas" onmousemove="handleMouseMove(event)">
+        <!-- Remote cursors will be added here -->
+    </div>
+
+    <script>
+        let ws;
+        let myId;
+        let cursors = {};
+
+        const projectDataExample = {
+            "node": { "media_4pq71gho": { "id": "media_4pq71gho", "type": "RECTANGLE", "css": { "width": "200px" } } },
+            "info": { "templateId": "670fa914c2f0842143d59c31" }
+        };
+
+        function log(msg) {
+            const div = document.getElementById('log');
+            div.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
+            div.scrollTop = div.scrollHeight;
+        }
+
+        function connect() {
+            const roomId = document.getElementById('roomId').value;
+            const userName = document.getElementById('userName').value || 'Anonymous';
+            if (!roomId) return alert('Enter Template ID');
+            
+            if (ws) ws.close();
+            
+            const url = `ws://localhost:8080/ws?templateId=${roomId}&userName=${encodeURIComponent(userName)}`;
+            ws = new WebSocket(url);
+            
+            ws.onopen = () => log('Connected to room: ' + roomId);
+            
+            ws.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                
+                if (data.type === 'system') {
+                    myId = data.userId;
+                    log('Server: ' + data.message);
+                } else if (data.type === 'user_list') {
+                    updateUserList(data.users);
+                } else if (data.type === 'mouse_move') {
+                    updateCursor(data);
+                } else if (data.node) {
+                    log(`Project update received from ${data.senderName}`);
+                    console.log('Project Data:', data);
+                }
+            };
+            
+            ws.onclose = () => {
+                log('Disconnected');
+                clearCursors();
+            };
+        }
+
+        function updateUserList(users) {
+            const list = document.getElementById('userList');
+            list.innerHTML = '';
+            users.forEach(u => {
+                const li = document.createElement('li');
+                li.className = 'user-item';
+                li.innerHTML = `<div class="user-dot"></div> ${u.userName} ${u.id === myId ? '(Me)' : ''}`;
+                list.appendChild(li);
+            });
+            
+            // Clean up cursors of users who left
+            const activeIds = users.map(u => u.id);
+            Object.keys(cursors).forEach(id => {
+                if (!activeIds.includes(id)) {
+                    cursors[id].remove();
+                    delete cursors[id];
+                }
+            });
+        }
+
+        function handleMouseMove(e) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            
+            const rect = document.getElementById('canvas').getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            ws.send(JSON.stringify({
+                type: 'mouse_move',
+                x: x,
+                y: y
+            }));
+        }
+
+        function updateCursor(data) {
+            if (data.senderId === myId) return;
+            
+            let cursor = cursors[data.senderId];
+            if (!cursor) {
+                cursor = document.createElement('div');
+                cursor.className = 'mouse-cursor';
+                cursor.innerHTML = `<div class="mouse-label">${data.senderName}</div>`;
+                document.getElementById('canvas').appendChild(cursor);
+                cursors[data.senderId] = cursor;
+            }
+            
+            cursor.style.left = data.x + 'px';
+            cursor.style.top = data.y + 'px';
+        }
+
+        function sendProjectData() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return log('Not connected');
+            ws.send(JSON.stringify(projectDataExample));
+            log('Sent project data');
+        }
+
+        function clearCursors() {
+            Object.values(cursors).forEach(c => c.remove());
+            cursors = {};
+        }
+    </script>
+</body>
+</html>
